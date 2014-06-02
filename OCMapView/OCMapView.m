@@ -141,76 +141,96 @@
         return;
     }
     
-    NSMutableArray *annotationsToCluster = nil;
+    static volatile NSInteger clusterCount = 0;
     
-    // Filter invisible (eg. out of visible map rect) annotations, if wanted
-    if (self.clusterInvisibleViews) {
-        annotationsToCluster = [[_allAnnotations allObjects] mutableCopy];
-    } else {
-        annotationsToCluster = [[self filterAnnotationsForVisibleMap:[_allAnnotations allObjects]] mutableCopy];
+    NSInteger localId;
+    @synchronized([self class]) {
+        localId = clusterCount;
     }
     
-    // Remove the annotation which should be ignored
-    [annotationsToCluster removeObjectsInArray:[_annotationsToIgnore allObjects]];
-    
-    // Cluster annotations, when enabled and map is above the minimum zoom
-    NSArray *clusteredAnnotations;
-    if (_clusteringEnabled && (self.region.span.longitudeDelta > _minLongitudeDeltaToCluster))
-    {
-        //calculate cluster radius
-        CLLocationDistance clusterRadius = self.region.span.longitudeDelta * _clusterSize;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         
-        // clustering
-        if (self.clusteringMethod == OCClusteringMethodBubble) {
-            clusteredAnnotations = [OCAlgorithms bubbleClusteringWithAnnotations:annotationsToCluster
-                                                                   clusterRadius:clusterRadius
-                                                                         grouped:self.clusterByGroupTag];
+        NSMutableArray *annotationsToCluster = nil;
+        
+        // Filter invisible (eg. out of visible map rect) annotations, if wanted
+        if (self.clusterInvisibleViews) {
+            annotationsToCluster = [[_allAnnotations allObjects] mutableCopy];
         } else {
-            clusteredAnnotations =[OCAlgorithms gridClusteringWithAnnotations:annotationsToCluster
-                                                                  clusterRect:MKCoordinateSpanMake(clusterRadius, clusterRadius)
-                                                                      grouped:self.clusterByGroupTag];
-        }
-    }
-    // pass through without when not
-    else{
-        clusteredAnnotations = annotationsToCluster;
-    }
-    
-    NSMutableArray *annotationsToDisplay = [clusteredAnnotations mutableCopy];
-    [annotationsToDisplay addObjectsFromArray:[_annotationsToIgnore allObjects]];
-    
-    // check minumum cluster size
-    for (NSInteger i=0; i<annotationsToDisplay.count; i++) {
-        OCAnnotation *ocAnnotation = annotationsToDisplay[i];
-        if ([ocAnnotation isKindOfClass:[OCAnnotation class]] &&
-            ocAnnotation.annotationsInCluster.count < self.minimumAnnotationCountPerCluster) {
-            [annotationsToDisplay removeObject:ocAnnotation];
-            [annotationsToDisplay addObjectsFromArray:ocAnnotation.annotationsInCluster];
-            i--; // we removed one object, go back one (otherwise some will be skipped)
-        }
-    }
-    
-    // update visible annotations
-    for (id<MKAnnotation> annotation in self.displayedAnnotations) {
-        if (annotation == self.userLocation) {
-            continue;
+            annotationsToCluster = [[self filterAnnotationsForVisibleMap:[_allAnnotations allObjects]] mutableCopy];
         }
         
-        // remove old annotations
-        if (![annotationsToDisplay containsObject:annotation]) {
-            [super removeAnnotation:annotation];
-        } else {
-            [annotationsToDisplay removeObject:annotation];
+        // Remove the annotation which should be ignored
+        [annotationsToCluster removeObjectsInArray:[_annotationsToIgnore allObjects]];
+        
+        // Cluster annotations, when enabled and map is above the minimum zoom
+        NSArray *clusteredAnnotations;
+        if (_clusteringEnabled && (self.region.span.longitudeDelta > _minLongitudeDeltaToCluster))
+        {
+            //calculate cluster radius
+            CLLocationDistance clusterRadius = self.region.span.longitudeDelta * _clusterSize;
+            
+            // clustering
+            if (self.clusteringMethod == OCClusteringMethodBubble) {
+                clusteredAnnotations = [OCAlgorithms bubbleClusteringWithAnnotations:annotationsToCluster
+                                                                       clusterRadius:clusterRadius
+                                                                             grouped:self.clusterByGroupTag];
+            } else {
+                clusteredAnnotations =[OCAlgorithms gridClusteringWithAnnotations:annotationsToCluster
+                                                                      clusterRect:MKCoordinateSpanMake(clusterRadius, clusterRadius)
+                                                                          grouped:self.clusterByGroupTag];
+            }
         }
-    }
-    
-    // add not existing annotations
-    [super addAnnotations:annotationsToDisplay];
-    
-    // update last rects & needs clustering
-    self.lastRefreshedMapRect = self.visibleMapRect;
-    self.lastRefreshedMapRegion = self.region;
-    self.neeedsClustering = NO;
+        // pass through without when not
+        else{
+            clusteredAnnotations = annotationsToCluster;
+        }
+        
+        NSMutableArray *annotationsToDisplay = [clusteredAnnotations mutableCopy];
+        [annotationsToDisplay addObjectsFromArray:[_annotationsToIgnore allObjects]];
+        
+        // check minumum cluster size
+        for (NSInteger i=0; i<annotationsToDisplay.count; i++) {
+            OCAnnotation *ocAnnotation = annotationsToDisplay[i];
+            if ([ocAnnotation isKindOfClass:[OCAnnotation class]] &&
+                ocAnnotation.annotationsInCluster.count < self.minimumAnnotationCountPerCluster) {
+                [annotationsToDisplay removeObject:ocAnnotation];
+                [annotationsToDisplay addObjectsFromArray:ocAnnotation.annotationsInCluster];
+                i--; // we removed one object, go back one (otherwise some will be skipped)
+            }
+        }
+        
+        NSMutableArray* annotationsToRemove = [[NSMutableArray alloc] init];
+        
+        for (id<MKAnnotation> annotation in self.displayedAnnotations) {
+            if (annotation == self.userLocation) {
+                continue;
+            }
+            
+            // remove old annotations
+            if (![annotationsToDisplay containsObject:annotation]) {
+                [annotationsToRemove addObject:annotation];
+            } else {
+                [annotationsToDisplay removeObject:annotation];
+            }
+        }
+        
+        @synchronized([self class]) {
+            if (localId <= clusterCount) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    clusterCount++;
+                    // update visible annotations
+                    
+                    [super removeAnnotations:annotationsToRemove];
+                    
+                    [super addAnnotations:annotationsToDisplay];
+                    
+                    self.lastRefreshedMapRect = self.visibleMapRect;
+                    self.lastRefreshedMapRegion = self.region;
+                    self.neeedsClustering = NO;
+                });
+            }
+        }
+    });
 }
 
 #pragma mark map rect changes tracking
