@@ -142,9 +142,11 @@
     }
     
     static volatile NSInteger clusterCount = 0;
+    static volatile NSInteger lastCount = 0;
     
     NSInteger localId;
     @synchronized([self class]) {
+        clusterCount++;
         localId = clusterCount;
     }
     
@@ -215,9 +217,9 @@
         }
         
         @synchronized([self class]) {
-            if (localId <= clusterCount) {
+            if (localId <= lastCount) {
+                lastCount = localId;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    clusterCount++;
                     // update visible annotations
                     
                     [super removeAnnotations:annotationsToRemove];
