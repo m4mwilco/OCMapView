@@ -7,7 +7,9 @@
 
 #import "OCMapView.h"
 
-@interface OCMapView ()
+@interface OCMapView () {
+    
+}
 @property (nonatomic, strong) NSMutableSet *allAnnotations;
 @property (nonatomic) MKCoordinateRegion lastRefreshedMapRegion;
 @property (nonatomic) MKMapRect lastRefreshedMapRect;
@@ -77,26 +79,34 @@
 #pragma mark - MKMapView
 
 - (void)addAnnotation:(id < MKAnnotation >)annotation{
-    [_allAnnotations addObject:annotation];
+    @synchronized(self) {
+        [_allAnnotations addObject:annotation];
+    }
     self.neeedsClustering = YES;
     [self doClustering];
 }
 
 - (void)addAnnotations:(NSArray *)annotations{
-    [_allAnnotations addObjectsFromArray:annotations];
+    @synchronized(self) {
+        [_allAnnotations addObjectsFromArray:annotations];
+    }
     self.neeedsClustering = YES;
     [self doClustering];
 }
 
 - (void)removeAnnotation:(id < MKAnnotation >)annotation{
-    [_allAnnotations removeObject:annotation];
+    @synchronized(self) {
+        [_allAnnotations removeObject:annotation];
+    }
     self.neeedsClustering = YES;
     [self doClustering];
 }
 
 - (void)removeAnnotations:(NSArray *)annotations{
-    for (id<MKAnnotation> annotation in annotations) {
-        [_allAnnotations removeObject:annotation];
+    @synchronized(self) {
+        for (id<MKAnnotation> annotation in annotations) {
+            [_allAnnotations removeObject:annotation];
+        }
     }
     self.neeedsClustering = YES;
     [self doClustering];
@@ -107,13 +117,17 @@
 // Returns, like the original method,
 // all annotations in the map unclustered.
 - (NSArray *)annotations {
-    return [_allAnnotations allObjects];
+    @synchronized(self) {
+        return [_allAnnotations allObjects];
+    }
 }
 
 //
 // Returns all annotations which are actually displayed on the map. (clusters)
 - (NSArray *)displayedAnnotations {
-    return super.annotations;
+    @synchronized(self) {
+        return super.annotations;
+    }
 }
 
 //
@@ -144,7 +158,7 @@
     static volatile NSInteger clusterCount = 0;
     
     NSInteger localId;
-    @synchronized([self class]) {
+    @synchronized(self) {
         clusterCount++;
         localId = clusterCount;
     }
@@ -157,7 +171,11 @@
         if (self.clusterInvisibleViews) {
             annotationsToCluster = [[_allAnnotations allObjects] mutableCopy];
         } else {
-            annotationsToCluster = [[self filterAnnotationsForVisibleMap:[_allAnnotations allObjects]] mutableCopy];
+            NSArray* allAnnotations;
+            @synchronized(self) {
+                allAnnotations = [_allAnnotations allObjects];
+            }
+            annotationsToCluster = [[self filterAnnotationsForVisibleMap:allAnnotations] mutableCopy];
         }
         
         // Remove the annotation which should be ignored
@@ -202,23 +220,22 @@
         
         NSMutableArray* annotationsToRemove = [[NSMutableArray alloc] init];
         
-        for (id<MKAnnotation> annotation in self.displayedAnnotations) {
-            if (annotation == self.userLocation) {
-                continue;
-            }
-            
-            // remove old annotations
-            if (![annotationsToDisplay containsObject:annotation]) {
-                [annotationsToRemove addObject:annotation];
-            } else {
-                [annotationsToDisplay removeObject:annotation];
-            }
-        }
-        
-        @synchronized([self class]) {
+        @synchronized(self) {
             if (localId <= clusterCount) {
-                clusterCount = localId;
+                
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    for (id<MKAnnotation> annotation in self.displayedAnnotations) {
+                        if (annotation == self.userLocation) {
+                            continue;
+                        }
+                        
+                        // remove old annotations
+                        if (![annotationsToDisplay containsObject:annotation]) {
+                            [annotationsToRemove addObject:annotation];
+                        } else {
+                            [annotationsToDisplay removeObject:annotation];
+                        }
+                    }
                     // update visible annotations
                     
                     [super removeAnnotations:annotationsToRemove];
